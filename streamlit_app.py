@@ -29,20 +29,23 @@ st.markdown(
 # -----------------------------
 # Physics helpers
 # -----------------------------
-def radial_wavefunction(r, n, l, Z=1, a0=5.29177210903e-11):
+def radial_wavefunction(r, n, l, Z=1, a0=5.29177210903e-11, normalize=True):
     """
     Hydrogen-like normalized radial wavefunction R_{n,l}(r).
-    Uses SciPy's vectorized assoc_laguerre to stay in NumPy/SciPy.
+    Vectorized with SciPy's assoc_laguerre. If normalize=True, performs
+    numerical normalization over r^2 dr along the first axis of r.
     """
     if n < 1 or l < 0 or l >= n:
         return np.zeros_like(r)
 
-    rho = 2.0 * Z * r / (n * a0)
+    # Ensure r is a 1D array when normalizing; keep original shape to reshape R later if needed
+    r_arr = np.asarray(r)
+    r_1d = r_arr.reshape(-1)  # flatten to 1D for stable integration
+
+    rho = 2.0 * Z * r_1d / (n * a0)
     k = n - l - 1
     alpha = 2*l + 1
 
-    # Normalization constant: (2Z/na0)^(3/2) * sqrt((n-l-1)! / [2n (n+l)!])
-    # For small n this is stable with math.factorial
     from math import factorial
     prefac = (2.0 * Z / (n * a0))**1.5
     Cnl = np.sqrt(factorial(n - l - 1) / (2.0*n * factorial(n + l)))
@@ -50,15 +53,18 @@ def radial_wavefunction(r, n, l, Z=1, a0=5.29177210903e-11):
     # Vectorized associated Laguerre polynomial L_k^{(alpha)}(rho)
     L_vals = assoc_laguerre(rho, k, alpha)
 
-    R = (prefac * Cnl) * np.exp(-rho/2.0) * (rho**l) * L_vals
-    R = np.nan_to_num(R, nan=0.0, posinf=0.0, neginf=0.0)
+    R_1d = (prefac * Cnl) * np.exp(-rho/2.0) * (rho**l) * L_vals
+    R_1d = np.nan_to_num(R_1d, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # Numerical normalization over r^2 dr (robust if grid spacing uniform)
-    if r.size > 1:
-        dr = r[1] - r[0]
-        norm = np.sqrt(np.trapz((np.abs(R)**2) * (r**2), dx=dr))
-        if norm > 0 and np.isfinite(norm):
-            R = R / norm
+    if normalize and r_1d.size > 1:
+        dr = r_1d[1] - r_1d[0]
+        # trapz over 1D arrays returns a scalar
+        norm = np.sqrt(np.trapz((np.abs(R_1d)**2) * (r_1d**2), dx=dr))
+        if np.isfinite(norm) and norm > 0:
+            R_1d = R_1d / norm
+
+    # Reshape back to the original r shape
+    R = R_1d.reshape(r_arr.shape)
     return R
 
 def hydrogen_orbital(n, l, m, r_grid, theta_grid, phi_grid, Z=1, a0=5.29177210903e-11):
@@ -66,13 +72,15 @@ def hydrogen_orbital(n, l, m, r_grid, theta_grid, phi_grid, Z=1, a0=5.2917721090
     ψ_{n,l,m}(r,θ,φ) = R_{n,l}(r) * Y_l^m(θ,φ).
     SciPy's sph_harm signature: sph_harm(m, l, phi, theta).
     """
-    R = radial_wavefunction(r_grid[:, None, None], n, l, Z=Z, a0=a0)  # (Nr,1,1)
-    Y = sph_harm(m, l, phi_grid[None, None, :], theta_grid[None, :, None])  # (1,Nθ,Nφ)
-    psi = R * Y
+    # Compute R on a 1D r and then broadcast to the 3D grid to avoid multi-axis integration issues
+    R_1d = radial_wavefunction(r_grid, n, l, Z=Z, a0=a0, normalize=True)  # shape (Nr,)
+    R = R_1d[:, None, None]  # broadcast to (Nr,1,1)
+
+    Y = sph_harm(m, l, phi_grid[None, None, :], theta_grid[None, :, None])  # (1,Nθ,1) x (1,1,Nφ) via broadcasting
+    psi = R * Y  # (Nr,Nθ,Nφ)
     return psi
 
-# Map principal quantum number n to a “typical shell” and an example element with that as valence shell.
-# This is just an educational label, not strict chemistry for all cases.
+# Map principal quantum number n to a “typical shell” and an example element label
 N_SHELL_LABEL = {
     1: ("K-shell (1s)", "Hydrogen"),
     2: ("L-shell (2s/2p)", "Oxygen"),
@@ -93,7 +101,6 @@ st.caption("Hydrogen-like orbitals with interactive quantum numbers and viewing 
 with st.sidebar:
     st.subheader("Quantum Numbers")
 
-    # Place n slider and an adjacent, read-only text field with the shell/element label
     c1, c2 = st.columns([2, 3])
     with c1:
         n = st.slider("Principal quantum number n", min_value=1, max_value=8, value=2)
@@ -143,7 +150,7 @@ psi2 = np.abs(psi)**2
 # -----------------------------
 if view_mode == "Radial probability P(r)":
     # P(r) = 4π r^2 |R_{n,l}(r)|^2
-    Rnl = radial_wavefunction(r, n, l, Z=Z, a0=a0)
+    Rnl = radial_wavefunction(r, n, l, Z=Z, a0=a0, normalize=True)
     P_r = 4*np.pi * (r**2) * (np.abs(Rnl)**2)
 
     fig = go.Figure()
