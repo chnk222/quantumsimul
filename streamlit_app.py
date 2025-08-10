@@ -15,11 +15,12 @@ st.markdown(
     .main {background: radial-gradient(1200px 800px at 80% 10%, #0b1220 0%, #070b14 40%, #05080f 100%);}
     .stApp {color: #e6edf7; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial;}
     h1, h2, h3 {letter-spacing: 0.5px;}
-    .metric-card {background: linear-gradient(135deg, rgba(50,95,200,.25), rgba(10,25,60,.35)); border: 1px solid rgba(120,160,255,.18); padding: 12px 16px; border-radius: 14px;}
     .info-card {background: linear-gradient(135deg, rgba(20,40,70,.65), rgba(8,16,30,.65)); border: 1px solid rgba(140,180,255,.18); padding: 14px 18px; border-radius: 14px;}
     .stSlider > div[data-baseweb='slider'] div[role='slider']{ box-shadow: 0 0 0 4px rgba(120,160,255,.2);}
     .stSlider label, .stSelectbox label, .stRadio label {font-weight: 500; color: #b9c7e6}
     .stTabs [data-baseweb='tab']{ color: #b9c7e6}
+    .dim-caption {color:#9fb2ff; font-size:0.9rem;}
+    .tight-row > div {padding-right: 0.5rem;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -31,32 +32,28 @@ st.markdown(
 def radial_wavefunction(r, n, l, Z=1, a0=5.29177210903e-11):
     """
     Hydrogen-like normalized radial wavefunction R_{n,l}(r).
-    Uses SciPy's vectorized assoc_laguerre to avoid scalar-conversion errors[1].
+    Uses SciPy's vectorized assoc_laguerre to stay in NumPy/SciPy.
     """
     if n < 1 or l < 0 or l >= n:
-        return np.zeros_like(r) + np.nan
+        return np.zeros_like(r)
 
     rho = 2.0 * Z * r / (n * a0)
     k = n - l - 1
     alpha = 2*l + 1
 
-    # Normalization constant (standard hydrogenic form)[5][7]
-    # R_{n,l}(r) = (2Z/na0)^{3/2} * sqrt((n-l-1)! / [2n (n+l)!]) * e^{-rho/2} * rho^l * L_{k}^{(alpha)}(rho)
-    # Use floating factorial via gamma-ratio in numpy by logs for stability
-    # Here factorials are small (n<=7-10 typical), direct factorial via numpy is fine.
-    # For clarity and portability, use Python's math.factorial.
+    # Normalization constant: (2Z/na0)^(3/2) * sqrt((n-l-1)! / [2n (n+l)!])
+    # For small n this is stable with math.factorial
     from math import factorial
     prefac = (2.0 * Z / (n * a0))**1.5
     Cnl = np.sqrt(factorial(n - l - 1) / (2.0*n * factorial(n + l)))
 
-    # Vectorized associated Laguerre polynomial L_{k}^{(alpha)}(rho)[1]
+    # Vectorized associated Laguerre polynomial L_k^{(alpha)}(rho)
     L_vals = assoc_laguerre(rho, k, alpha)
 
     R = (prefac * Cnl) * np.exp(-rho/2.0) * (rho**l) * L_vals
-    # Handle r=0 safely for l>0; replace any NaNs/Infs
     R = np.nan_to_num(R, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # Numerical normalization over r^2 dr for robustness
+    # Numerical normalization over r^2 dr (robust if grid spacing uniform)
     if r.size > 1:
         dr = r[1] - r[0]
         norm = np.sqrt(np.trapz((np.abs(R)**2) * (r**2), dx=dr))
@@ -66,12 +63,26 @@ def radial_wavefunction(r, n, l, Z=1, a0=5.29177210903e-11):
 
 def hydrogen_orbital(n, l, m, r_grid, theta_grid, phi_grid, Z=1, a0=5.29177210903e-11):
     """
-    Compute hydrogenic orbital psi_{n,l,m}(r,theta,phi) = R_{n,l}(r) * Y_l^m(theta,phi)[7].
+    ψ_{n,l,m}(r,θ,φ) = R_{n,l}(r) * Y_l^m(θ,φ).
+    SciPy's sph_harm signature: sph_harm(m, l, phi, theta).
     """
     R = radial_wavefunction(r_grid[:, None, None], n, l, Z=Z, a0=a0)  # (Nr,1,1)
     Y = sph_harm(m, l, phi_grid[None, None, :], theta_grid[None, :, None])  # (1,Nθ,Nφ)
-    psi = R * Y  # broadcast to (Nr, Nθ, Nφ)
+    psi = R * Y
     return psi
+
+# Map principal quantum number n to a “typical shell” and an example element with that as valence shell.
+# This is just an educational label, not strict chemistry for all cases.
+N_SHELL_LABEL = {
+    1: ("K-shell (1s)", "Hydrogen"),
+    2: ("L-shell (2s/2p)", "Oxygen"),
+    3: ("M-shell (3s/3p/3d)", "Sodium"),
+    4: ("N-shell (4s/4p/4d)", "Potassium"),
+    5: ("O-shell (5s/5p/5d)", "Rubidium"),
+    6: ("P-shell (6s/6p/6d)", "Cesium"),
+    7: ("Q-shell (7s/7p/7d)", "Francium"),
+    8: ("R-shell (8s/8p)", "Hypothetical"),
+}
 
 # -----------------------------
 # UI controls
@@ -81,8 +92,16 @@ st.caption("Hydrogen-like orbitals with interactive quantum numbers and viewing 
 
 with st.sidebar:
     st.subheader("Quantum Numbers")
-    n = st.slider("Principal quantum number n", min_value=1, max_value=7, value=2)
-    l = st.slider("Azimuthal quantum number l", min_value=0, max_value=n-1, value=min(1, n-1))
+
+    # Place n slider and an adjacent, read-only text field with the shell/element label
+    c1, c2 = st.columns([2, 3])
+    with c1:
+        n = st.slider("Principal quantum number n", min_value=1, max_value=8, value=2)
+    shell_text, elem_text = N_SHELL_LABEL.get(n, ("Shell", "Element"))
+    with c2:
+        st.text_input("Shell / example element", f"{shell_text} — e.g., {elem_text}", disabled=True)
+
+    l = st.slider("Azimuthal quantum number l", min_value=0, max_value=max(0, n-1), value=min(1, n-1))
     m = st.slider("Magnetic quantum number m", min_value=-l, max_value=l, value=0)
 
     st.subheader("Atom & Scale")
@@ -112,7 +131,7 @@ else:
 # Spatial grid (cutoff capturing most probability ~ n^2 a0/Z)
 Rmax = 12 * (n**2) * (a0 / max(Z, 1))
 r = np.linspace(0, Rmax, Nr)
-theta = np.linspace(1e-6, np.pi - 1e-6, Nth)
+theta = np.linspace(1e-6, np.pi - 1e-6, Nth)  # avoid singular ends
 phi = np.linspace(0, 2*np.pi, Nph, endpoint=False)
 
 # Compute orbital
@@ -123,7 +142,7 @@ psi2 = np.abs(psi)**2
 # Visualizations
 # -----------------------------
 if view_mode == "Radial probability P(r)":
-    # P(r) = 4π r^2 |R_{n,l}(r)|^2[5]
+    # P(r) = 4π r^2 |R_{n,l}(r)|^2
     Rnl = radial_wavefunction(r, n, l, Z=Z, a0=a0)
     P_r = 4*np.pi * (r**2) * (np.abs(Rnl)**2)
 
@@ -140,7 +159,7 @@ if view_mode == "Radial probability P(r)":
     st.plotly_chart(fig, use_container_width=True)
 
 elif view_mode == "Angular density |Y_l^m(θ,φ)|^2 map":
-    # Angular map independent of r; spherical harmonics Y_l^m[7]
+    # Angular map independent of r
     Y = sph_harm(m, l, phi[None, :], theta[:, None])
     Y2 = np.abs(Y)**2
 
@@ -162,7 +181,7 @@ elif view_mode == "Angular density |Y_l^m(θ,φ)|^2 map":
     st.plotly_chart(fig, use_container_width=True)
 
 else:
-    # 3D probabilistic volume rendering using Plotly Volume[6]
+    # 3D probabilistic volume using Plotly Volume
     Rg, Tg, Pg = np.meshgrid(r, theta, phi, indexing='ij')
     X = Rg * np.sin(Tg) * np.cos(Pg)
     Yc = Rg * np.sin(Tg) * np.sin(Pg)
@@ -211,22 +230,22 @@ else:
 with st.expander("Wavefunction details"):
     st.markdown(
         """
-        The hydrogen-like orbital factorizes as ψₙₗₘ(r,θ,φ) = Rₙₗ(r) · Yₗᵐ(θ,φ)[7].
+        The hydrogen-like orbital factorizes as ψₙₗₘ(r,θ,φ) = Rₙₗ(r) · Yₗᵐ(θ,φ).
 
-        - Radial part Rₙₗ(r): associated Laguerre polynomials L^{(2l+1)}_{n−l−1}(ρ) with ρ = 2Zr/(na₀) and exponential decay e^{-ρ/2}[5][7].
-        - Angular part Yₗᵐ(θ,φ): spherical harmonics determining angular nodes and orientation set by m[7].
-        - Radial probability: P(r) = 4π r² |Rₙₗ(r)|²; most-likely radii scale roughly with n² a₀/Z[5].
-        - This app uses SciPy’s assoc_laguerre and sph_harm for stable, vectorized evaluation[1][7].
+        - Radial part Rₙₗ(r): associated Laguerre polynomials L^{(2l+1)}_{n−l−1}(ρ) with ρ = 2Zr/(na₀) and exponential decay e^{-ρ/2}.
+        - Angular part Yₗᵐ(θ,φ): spherical harmonics determine angular nodes and orientation set by m.
+        - Radial probability: P(r) = 4π r² |Rₙₗ(r)|²; most-likely radii scale roughly with n² a₀/Z.
+        - This app uses SciPy’s assoc_laguerre and sph_harm for stable, vectorized evaluation.
         """
     )
 
 with st.expander("Tips"):
     st.markdown(
         """
-        - Increase Z for hydrogen-like ions (He⁺, Li²⁺, …); orbitals shrink ∝1/Z[7].
-        - l ranges 0..n−1; m ranges from −l..+l[7].
-        - Use Radial probability to locate peaks (shell radii); peaks move outward with n[5].
-        - The 3D volume is qualitative; switch to High detail for sharper nodal structures[6].
+        - Increase Z for hydrogen-like ions (He⁺, Li²⁺, …); orbitals shrink ∝1/Z.
+        - l ranges 0..n−1; m ranges from −l..+l.
+        - Use Radial probability to locate peaks (shell radii); peaks move outward with n.
+        - The 3D volume is qualitative; switch to High detail for sharper nodal structures.
         """
     )
 
