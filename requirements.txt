@@ -1,8 +1,4 @@
 streamlit
 numpy
 scipy
-sympy
-pyvista
-pyvistaqt
-panel
-pillow
+plotly
