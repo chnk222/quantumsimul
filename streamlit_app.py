@@ -35,6 +35,7 @@ def radial_wavefunction(r, n, l, Z=1, a0=5.29177210903e-11, normalize=True):
     if n < 1 or l < 0 or l >= n:
         return np.zeros_like(r)
 
+    # LINE ~43: ensure 1D integration then reshape back
     r_arr = np.asarray(r)
     r_1d = r_arr.reshape(-1)
 
@@ -133,7 +134,7 @@ phi = np.linspace(0, 2*np.pi, Nph, endpoint=False)
 
 # Compute orbital and density
 psi = hydrogen_orbital(n, l, m, r, theta, phi, Z=Z, a0=a0)
-psi2 = np.abs(psi)**2
+psi2 = np.abs(psi)**2  # shape (Nr, Nθ, Nφ)
 
 # -----------------------------
 # Visualizations
@@ -157,7 +158,7 @@ if view_mode == "Radial probability P(r)":
 
 elif view_mode == "Angular density |Y_l^m(θ,φ)|^2 map":
     # Angular map independent of r
-    Y = sph_harm(m, l, phi[None, :], theta[:, None])
+    Y = sph_harm(m, l, phi[None, :], theta[:, None])  # (Nθ, Nφ)
     Y2 = np.abs(Y)**2
 
     fig = go.Figure(data=[go.Heatmap(
@@ -178,85 +179,81 @@ elif view_mode == "Angular density |Y_l^m(θ,φ)|^2 map":
     st.plotly_chart(fig, use_container_width=True)
 
 elif view_mode == "2D slice (probability density)":
-    # Create Cartesian grid from spherical to build a 3D density, then slice a plane
-    Rg, Tg, Pg = np.meshgrid(r, theta, phi, indexing='ij')
+    # Build spherical grid to compute Cartesian coords for slicing
+    Rg, Tg, Pg = np.meshgrid(r, theta, phi, indexing='ij')  # (Nr, Nθ, Nφ)
     X = Rg * np.sin(Tg) * np.cos(Pg)
     Yc = Rg * np.sin(Tg) * np.sin(Pg)
     Zc = Rg * np.cos(Tg)
 
-    # Choose slice plane and offset
     st.subheader("2D Slice Controls")
     plane = st.selectbox("Slice plane", ["XY (z=const)", "XZ (y=const)", "YZ (x=const)"], index=0)
-    # Axis ranges in Å for the slider labels
     extent_A = (float(-Rmax*1e10), float(Rmax*1e10))
+    band = max(Rmax/80, 1e-12)  # thin slab thickness in meters
+
     if plane == "XY (z=const)":
-        axis_vals = Zc[:, 0, 0] * 1e10
         offset_A = st.slider("z-slice (Å)", min_value=extent_A[0], max_value=extent_A[1], value=0.0, step=(extent_A[1]-extent_A[0])/200.0)
-        # Find nearest index along z; z varies with r and theta, not a regular axis.
-        # Build a mask near the desired z and average along a thin band.
         z_target = offset_A / 1e10
-        band = max(Rmax/80, 1e-12)
-        mask = np.abs(Zc - z_target) < band
-        slice_vals = np.where(mask, psi2, 0.0)
-        # Project to XY by taking max along the axis that best collapses the band
-        Zslice = slice_vals.max(axis=1).max(axis=2)
-        Xax = X[:, 0, 0] * 1e10
-        Yax = Yc[0, :, 0] * 1e10  # not strictly monotonic; we label axes generically
+        mask = np.abs(Zc - z_target) < band  # (Nr, Nθ, Nφ)
+        slice_vals = np.where(mask, psi2, 0.0)  # keep shape (Nr, Nθ, Nφ)
+
+        # Reduce along φ (axis=2) to get (Nr, Nθ), then map to x-y via theta/phi grid; for display, just use (r, θ)
+        # Use max over φ to highlight structure and avoid total zero collapse
+        Zslice = slice_vals.max(axis=2)  # now (Nr, Nθ)
+
+        # Heatmap expects 2D z; we can transpose to show axes as (θ, r) or (r, θ)
         fig = go.Figure(data=go.Heatmap(
-            z=Zslice.T,
+            z=Zslice.T,  # (Nθ, Nr)
             colorscale=cmap,
             colorbar=dict(title='|ψ|²'),
         ))
         fig.update_layout(
             template='plotly_dark',
-            xaxis_title='x (Å)',
-            yaxis_title='y (Å)',
+            xaxis_title='r index',
+            yaxis_title='θ index',
             title=f'2D slice of |ψ|² on XY plane at z={offset_A:.2f}Å',
         )
         st.plotly_chart(fig, use_container_width=True)
 
     elif plane == "XZ (y=const)":
-        axis_vals = Yc[0, :, 0] * 1e10
         offset_A = st.slider("y-slice (Å)", min_value=extent_A[0], max_value=extent_A[1], value=0.0, step=(extent_A[1]-extent_A[0])/200.0)
         y_target = offset_A / 1e10
-        band = max(Rmax/80, 1e-12)
         mask = np.abs(Yc - y_target) < band
-        slice_vals = np.where(mask, psi2, 0.0)
-        Zslice = slice_vals.max(axis=2).max(axis=1)
-        Xax = X[:, 0, 0] * 1e10
-        Zax = Zc[0, 0, :] * 1e10
+        slice_vals = np.where(mask, psi2, 0.0)  # (Nr, Nθ, Nφ)
+
+        # Reduce along φ (axis=2) to get (Nr, Nθ)
+        Zslice = slice_vals.max(axis=2)  # (Nr, Nθ)
+
         fig = go.Figure(data=go.Heatmap(
-            z=Zslice.T,
+            z=Zslice.T,  # (Nθ, Nr)
             colorscale=cmap,
             colorbar=dict(title='|ψ|²'),
         ))
         fig.update_layout(
             template='plotly_dark',
-            xaxis_title='x (Å)',
-            yaxis_title='z (Å)',
+            xaxis_title='r index',
+            yaxis_title='θ index',
             title=f'2D slice of |ψ|² on XZ plane at y={offset_A:.2f}Å',
         )
         st.plotly_chart(fig, use_container_width=True)
 
     else:  # "YZ (x=const)"
-        axis_vals = X[:, 0, 0] * 1e10
         offset_A = st.slider("x-slice (Å)", min_value=extent_A[0], max_value=extent_A[1], value=0.0, step=(extent_A[1]-extent_A[0])/200.0)
         x_target = offset_A / 1e10
-        band = max(Rmax/80, 1e-12)
         mask = np.abs(X - x_target) < band
-        slice_vals = np.where(mask, psi2, 0.0)
-        Zslice = slice_vals.max(axis=2).max(axis=0)
-        Yax = Yc[0, :, 0] * 1e10
-        Zax = Zc[0, 0, :] * 1e10
+        slice_vals = np.where(mask, psi2, 0.0)  # (Nr, Nθ, Nφ)
+
+        # Reduce along φ (axis=2) to get (Nr, Nθ)
+        Zslice = slice_vals.max(axis=2)  # (Nr, Nθ)
+
         fig = go.Figure(data=go.Heatmap(
-            z=Zslice.T,
+            z=Zslice.T,  # (Nθ, Nr)
             colorscale=cmap,
             colorbar=dict(title='|ψ|²'),
         ))
         fig.update_layout(
             template='plotly_dark',
-            xaxis_title='y (Å)',
-            yaxis_title='z (Å)',
+            xaxis_title='r index',
+            yaxis_title='θ index',
             title=f'2D slice of |ψ|² on YZ plane at x={offset_A:.2f}Å',
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -286,10 +283,10 @@ else:
         y=Ys.flatten()*1e10,
         z=Zs.flatten()*1e10,
         value=Cs.flatten(),
-        opacity=0.06,          # slightly reduced to reveal points
-        isomin=0.30,           # show higher probability regions
+        opacity=0.06,
+        isomin=0.30,
         isomax=1.0,
-        surface_count=5,       # modest to avoid heavy fog
+        surface_count=5,
         colorscale=cmap,
         caps=dict(x_show=False, y_show=False, z_show=False),
         name="Probability volume"
@@ -298,7 +295,7 @@ else:
     # Sample point cloud from density and add AFTER the volume so it renders on top
     rng = np.random.default_rng(0)
     prob = Cs / (Cs.sum() + 1e-18)
-    n_points = min(20000, Cs.size)  # cap for performance
+    n_points = min(20000, Cs.size)
     idx = rng.choice(Cs.size, size=n_points, replace=False, p=prob.ravel())
     px = Xs.ravel()[idx] * 1e10
     py = Ys.ravel()[idx] * 1e10
@@ -309,7 +306,7 @@ else:
         mode='markers',
         marker=dict(
             size=2,
-            color='rgba(255,255,255,0.95)',  # bright, nearly opaque
+            color='rgba(255,255,255,0.95)',
             line=dict(width=0),
         ),
         name='Point cloud'
