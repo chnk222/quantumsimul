@@ -19,7 +19,6 @@ st.markdown(
     .stSlider > div[data-baseweb='slider'] div[role='slider']{ box-shadow: 0 0 0 4px rgba(120,160,255,.2);}
     .stSlider label, .stSelectbox label, .stRadio label {font-weight: 500; color: #b9c7e6}
     .stTabs [data-baseweb='tab']{ color: #b9c7e6}
-    .dim-caption {color:#9fb2ff; font-size:0.9rem;}
     .tight-row > div {padding-right: 0.5rem;}
     </style>
     """,
@@ -31,16 +30,14 @@ st.markdown(
 # -----------------------------
 def radial_wavefunction(r, n, l, Z=1, a0=5.29177210903e-11, normalize=True):
     """
-    Hydrogen-like normalized radial wavefunction R_{n,l}(r).
-    Vectorized with SciPy's assoc_laguerre. If normalize=True, performs
-    numerical normalization over r^2 dr along the first axis of r.
+    Hydrogen-like radial wavefunction R_{n,l}(r), vectorized.
+    Normalization integrates over r^2 dr on 1D r to avoid ambiguity.
     """
     if n < 1 or l < 0 or l >= n:
         return np.zeros_like(r)
 
-    # Ensure r is a 1D array when normalizing; keep original shape to reshape R later if needed
     r_arr = np.asarray(r)
-    r_1d = r_arr.reshape(-1)  # flatten to 1D for stable integration
+    r_1d = r_arr.reshape(-1)  # flatten for stable integration
 
     rho = 2.0 * Z * r_1d / (n * a0)
     k = n - l - 1
@@ -50,37 +47,30 @@ def radial_wavefunction(r, n, l, Z=1, a0=5.29177210903e-11, normalize=True):
     prefac = (2.0 * Z / (n * a0))**1.5
     Cnl = np.sqrt(factorial(n - l - 1) / (2.0*n * factorial(n + l)))
 
-    # Vectorized associated Laguerre polynomial L_k^{(alpha)}(rho)
     L_vals = assoc_laguerre(rho, k, alpha)
-
     R_1d = (prefac * Cnl) * np.exp(-rho/2.0) * (rho**l) * L_vals
     R_1d = np.nan_to_num(R_1d, nan=0.0, posinf=0.0, neginf=0.0)
 
     if normalize and r_1d.size > 1:
         dr = r_1d[1] - r_1d[0]
-        # trapz over 1D arrays returns a scalar
         norm = np.sqrt(np.trapz((np.abs(R_1d)**2) * (r_1d**2), dx=dr))
         if np.isfinite(norm) and norm > 0:
             R_1d = R_1d / norm
 
-    # Reshape back to the original r shape
-    R = R_1d.reshape(r_arr.shape)
-    return R
+    return R_1d.reshape(r_arr.shape)
 
 def hydrogen_orbital(n, l, m, r_grid, theta_grid, phi_grid, Z=1, a0=5.29177210903e-11):
     """
     ψ_{n,l,m}(r,θ,φ) = R_{n,l}(r) * Y_l^m(θ,φ).
     SciPy's sph_harm signature: sph_harm(m, l, phi, theta).
     """
-    # Compute R on a 1D r and then broadcast to the 3D grid to avoid multi-axis integration issues
-    R_1d = radial_wavefunction(r_grid, n, l, Z=Z, a0=a0, normalize=True)  # shape (Nr,)
-    R = R_1d[:, None, None]  # broadcast to (Nr,1,1)
-
-    Y = sph_harm(m, l, phi_grid[None, None, :], theta_grid[None, :, None])  # (1,Nθ,1) x (1,1,Nφ) via broadcasting
-    psi = R * Y  # (Nr,Nθ,Nφ)
+    R_1d = radial_wavefunction(r_grid, n, l, Z=Z, a0=a0, normalize=True)  # (Nr,)
+    R = R_1d[:, None, None]
+    Y = sph_harm(m, l, phi_grid[None, None, :], theta_grid[None, :, None])  # (1, Nθ, Nφ)
+    psi = R * Y
     return psi
 
-# Map principal quantum number n to a “typical shell” and an example element label
+# Shell/element label for n
 N_SHELL_LABEL = {
     1: ("K-shell (1s)", "Hydrogen"),
     2: ("L-shell (2s/2p)", "Oxygen"),
@@ -96,11 +86,10 @@ N_SHELL_LABEL = {
 # UI controls
 # -----------------------------
 st.title("Quantum Atom Simulator")
-st.caption("Hydrogen-like orbitals with interactive quantum numbers and viewing modes")
+st.caption("Hydrogen-like orbitals with interactive quantum numbers, atoms, and visualization modes")
 
 with st.sidebar:
     st.subheader("Quantum Numbers")
-
     c1, c2 = st.columns([2, 3])
     with c1:
         n = st.slider("Principal quantum number n", min_value=1, max_value=8, value=2)
@@ -119,7 +108,7 @@ with st.sidebar:
     view_mode = st.selectbox(
         "Viewing mode",
         [
-            "3D volume (probability density)",
+            "3D volume + point cloud",
             "Radial probability P(r)",
             "Angular density |Y_l^m(θ,φ)|^2 map",
         ],
@@ -141,7 +130,7 @@ r = np.linspace(0, Rmax, Nr)
 theta = np.linspace(1e-6, np.pi - 1e-6, Nth)  # avoid singular ends
 phi = np.linspace(0, 2*np.pi, Nph, endpoint=False)
 
-# Compute orbital
+# Compute orbital and density
 psi = hydrogen_orbital(n, l, m, r, theta, phi, Z=Z, a0=a0)
 psi2 = np.abs(psi)**2
 
@@ -188,7 +177,7 @@ elif view_mode == "Angular density |Y_l^m(θ,φ)|^2 map":
     st.plotly_chart(fig, use_container_width=True)
 
 else:
-    # 3D probabilistic volume using Plotly Volume
+    # 3D volume + point cloud
     Rg, Tg, Pg = np.meshgrid(r, theta, phi, indexing='ij')
     X = Rg * np.sin(Tg) * np.cos(Pg)
     Yc = Rg * np.sin(Tg) * np.sin(Pg)
@@ -205,17 +194,40 @@ else:
     Zs = Zc[::step, ::step, ::step]
     Cs = dens_norm[::step, ::step, ::step]
 
-    fig = go.Figure(data=go.Volume(
-        x=Xs.flatten()*1e10,  # convert to Å
+    # Volume trace
+    fig = go.Figure()
+    fig.add_trace(go.Volume(
+        x=Xs.flatten()*1e10,
         y=Ys.flatten()*1e10,
         z=Zs.flatten()*1e10,
         value=Cs.flatten(),
-        opacity=0.08,         # overall opacity
-        isomin=0.25,          # show higher probability regions
+        opacity=0.06,          # slightly reduced to reveal points
+        isomin=0.30,           # show higher probability regions
         isomax=1.0,
-        surface_count=6,
+        surface_count=5,       # modest count to avoid heavy fog
         colorscale=cmap,
-        caps=dict(x_show=False, y_show=False, z_show=False)
+        caps=dict(x_show=False, y_show=False, z_show=False),
+        name="Probability volume"
+    ))
+
+    # Sample point cloud from density and add AFTER the volume so it renders on top
+    rng = np.random.default_rng(0)
+    prob = Cs / (Cs.sum() + 1e-18)
+    n_points = min(20000, Cs.size)  # cap for performance
+    idx = rng.choice(Cs.size, size=n_points, replace=False, p=prob.ravel())
+    px = Xs.ravel()[idx] * 1e10
+    py = Ys.ravel()[idx] * 1e10
+    pz = Zs.ravel()[idx] * 1e10
+
+    fig.add_trace(go.Scatter3d(
+        x=px, y=py, z=pz,
+        mode='markers',
+        marker=dict(
+            size=2,
+            color='rgba(255,255,255,0.95)',  # bright, nearly opaque points
+            line=dict(width=0),
+        ),
+        name='Point cloud'
     ))
 
     fig.update_layout(
@@ -227,7 +239,8 @@ else:
         ),
         title=f'3D Electron Probability Density for n={n}, l={l}, m={m}, Z={Z}',
         paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)'
+        plot_bgcolor='rgba(0,0,0,0)',
+        showlegend=False
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -242,7 +255,7 @@ with st.expander("Wavefunction details"):
         - Radial part Rₙₗ(r): associated Laguerre polynomials L^{(2l+1)}_{n−l−1}(ρ) with ρ = 2Zr/(na₀) and exponential decay e^{-ρ/2}.
         - Angular part Yₗᵐ(θ,φ): spherical harmonics determine angular nodes and orientation set by m.
         - Radial probability: P(r) = 4π r² |Rₙₗ(r)|²; most-likely radii scale roughly with n² a₀/Z.
-        - This app uses SciPy’s assoc_laguerre and sph_harm for stable, vectorized evaluation.
+        - Implemented with SciPy’s assoc_laguerre and sph_harm for stable, vectorized evaluation.
         """
     )
 
@@ -252,7 +265,7 @@ with st.expander("Tips"):
         - Increase Z for hydrogen-like ions (He⁺, Li²⁺, …); orbitals shrink ∝1/Z.
         - l ranges 0..n−1; m ranges from −l..+l.
         - Use Radial probability to locate peaks (shell radii); peaks move outward with n.
-        - The 3D volume is qualitative; switch to High detail for sharper nodal structures.
+        - In 3D, points are intentionally drawn after the volume and with bright color so they remain visible.
         """
     )
 
