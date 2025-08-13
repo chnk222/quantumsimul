@@ -18,7 +18,6 @@ st.markdown(
     .info-card {background: linear-gradient(135deg, rgba(20,40,70,.65), rgba(8,16,30,.65)); border: 1px solid rgba(140,180,255,.18); padding: 14px 18px; border-radius: 14px;}
     .stSlider > div[data-baseweb='slider'] div[role='slider']{ box-shadow: 0 0 0 4px rgba(120,160,255,.2);}
     .stSlider label, .stSelectbox label, .stRadio label {font-weight: 500; color: #b9c7e6}
-    .stTabs [data-baseweb='tab']{ color: #b9c7e6}
     .tight-row > div {padding-right: 0.5rem;}
     </style>
     """,
@@ -31,13 +30,13 @@ st.markdown(
 def radial_wavefunction(r, n, l, Z=1, a0=5.29177210903e-11, normalize=True):
     """
     Hydrogen-like radial wavefunction R_{n,l}(r), vectorized.
-    Normalization integrates over r^2 dr on 1D r to avoid ambiguity.
+    Normalization integrates over r^2 dr on 1D r for stability.
     """
     if n < 1 or l < 0 or l >= n:
         return np.zeros_like(r)
 
     r_arr = np.asarray(r)
-    r_1d = r_arr.reshape(-1)  # flatten for stable integration
+    r_1d = r_arr.reshape(-1)
 
     rho = 2.0 * Z * r_1d / (n * a0)
     k = n - l - 1
@@ -97,8 +96,9 @@ with st.sidebar:
     with c2:
         st.text_input("Shell / example element", f"{shell_text} — e.g., {elem_text}", disabled=True)
 
-    l = st.slider("Azimuthal quantum number l", min_value=0, max_value=max(0, n-1), value=min(1, n-1))
-    m = st.slider("Magnetic quantum number m", min_value=-l, max_value=l, value=0)
+    # Enforce l in [0, n-1] and m in [-l, l]
+    l = st.slider("Azimuthal quantum number l (0..n-1)", min_value=0, max_value=max(0, n-1), value=min(1, n-1))
+    m = st.slider("Magnetic quantum number m (-l..l)", min_value=-l, max_value=l, value=0)
 
     st.subheader("Atom & Scale")
     Z = st.slider("Atomic number Z (hydrogen-like)", 1, 10, 1)
@@ -109,6 +109,7 @@ with st.sidebar:
         "Viewing mode",
         [
             "3D volume + point cloud",
+            "2D slice (probability density)",
             "Radial probability P(r)",
             "Angular density |Y_l^m(θ,φ)|^2 map",
         ],
@@ -176,6 +177,90 @@ elif view_mode == "Angular density |Y_l^m(θ,φ)|^2 map":
     )
     st.plotly_chart(fig, use_container_width=True)
 
+elif view_mode == "2D slice (probability density)":
+    # Create Cartesian grid from spherical to build a 3D density, then slice a plane
+    Rg, Tg, Pg = np.meshgrid(r, theta, phi, indexing='ij')
+    X = Rg * np.sin(Tg) * np.cos(Pg)
+    Yc = Rg * np.sin(Tg) * np.sin(Pg)
+    Zc = Rg * np.cos(Tg)
+
+    # Choose slice plane and offset
+    st.subheader("2D Slice Controls")
+    plane = st.selectbox("Slice plane", ["XY (z=const)", "XZ (y=const)", "YZ (x=const)"], index=0)
+    # Axis ranges in Å for the slider labels
+    extent_A = (float(-Rmax*1e10), float(Rmax*1e10))
+    if plane == "XY (z=const)":
+        axis_vals = Zc[:, 0, 0] * 1e10
+        offset_A = st.slider("z-slice (Å)", min_value=extent_A[0], max_value=extent_A[1], value=0.0, step=(extent_A[1]-extent_A[0])/200.0)
+        # Find nearest index along z; z varies with r and theta, not a regular axis.
+        # Build a mask near the desired z and average along a thin band.
+        z_target = offset_A / 1e10
+        band = max(Rmax/80, 1e-12)
+        mask = np.abs(Zc - z_target) < band
+        slice_vals = np.where(mask, psi2, 0.0)
+        # Project to XY by taking max along the axis that best collapses the band
+        Zslice = slice_vals.max(axis=1).max(axis=2)
+        Xax = X[:, 0, 0] * 1e10
+        Yax = Yc[0, :, 0] * 1e10  # not strictly monotonic; we label axes generically
+        fig = go.Figure(data=go.Heatmap(
+            z=Zslice.T,
+            colorscale=cmap,
+            colorbar=dict(title='|ψ|²'),
+        ))
+        fig.update_layout(
+            template='plotly_dark',
+            xaxis_title='x (Å)',
+            yaxis_title='y (Å)',
+            title=f'2D slice of |ψ|² on XY plane at z={offset_A:.2f}Å',
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif plane == "XZ (y=const)":
+        axis_vals = Yc[0, :, 0] * 1e10
+        offset_A = st.slider("y-slice (Å)", min_value=extent_A[0], max_value=extent_A[1], value=0.0, step=(extent_A[1]-extent_A[0])/200.0)
+        y_target = offset_A / 1e10
+        band = max(Rmax/80, 1e-12)
+        mask = np.abs(Yc - y_target) < band
+        slice_vals = np.where(mask, psi2, 0.0)
+        Zslice = slice_vals.max(axis=2).max(axis=1)
+        Xax = X[:, 0, 0] * 1e10
+        Zax = Zc[0, 0, :] * 1e10
+        fig = go.Figure(data=go.Heatmap(
+            z=Zslice.T,
+            colorscale=cmap,
+            colorbar=dict(title='|ψ|²'),
+        ))
+        fig.update_layout(
+            template='plotly_dark',
+            xaxis_title='x (Å)',
+            yaxis_title='z (Å)',
+            title=f'2D slice of |ψ|² on XZ plane at y={offset_A:.2f}Å',
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    else:  # "YZ (x=const)"
+        axis_vals = X[:, 0, 0] * 1e10
+        offset_A = st.slider("x-slice (Å)", min_value=extent_A[0], max_value=extent_A[1], value=0.0, step=(extent_A[1]-extent_A[0])/200.0)
+        x_target = offset_A / 1e10
+        band = max(Rmax/80, 1e-12)
+        mask = np.abs(X - x_target) < band
+        slice_vals = np.where(mask, psi2, 0.0)
+        Zslice = slice_vals.max(axis=2).max(axis=0)
+        Yax = Yc[0, :, 0] * 1e10
+        Zax = Zc[0, 0, :] * 1e10
+        fig = go.Figure(data=go.Heatmap(
+            z=Zslice.T,
+            colorscale=cmap,
+            colorbar=dict(title='|ψ|²'),
+        ))
+        fig.update_layout(
+            template='plotly_dark',
+            xaxis_title='y (Å)',
+            yaxis_title='z (Å)',
+            title=f'2D slice of |ψ|² on YZ plane at x={offset_A:.2f}Å',
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
 else:
     # 3D volume + point cloud
     Rg, Tg, Pg = np.meshgrid(r, theta, phi, indexing='ij')
@@ -204,7 +289,7 @@ else:
         opacity=0.06,          # slightly reduced to reveal points
         isomin=0.30,           # show higher probability regions
         isomax=1.0,
-        surface_count=5,       # modest count to avoid heavy fog
+        surface_count=5,       # modest to avoid heavy fog
         colorscale=cmap,
         caps=dict(x_show=False, y_show=False, z_show=False),
         name="Probability volume"
@@ -224,7 +309,7 @@ else:
         mode='markers',
         marker=dict(
             size=2,
-            color='rgba(255,255,255,0.95)',  # bright, nearly opaque points
+            color='rgba(255,255,255,0.95)',  # bright, nearly opaque
             line=dict(width=0),
         ),
         name='Point cloud'
@@ -264,8 +349,7 @@ with st.expander("Tips"):
         """
         - Increase Z for hydrogen-like ions (He⁺, Li²⁺, …); orbitals shrink ∝1/Z.
         - l ranges 0..n−1; m ranges from −l..+l.
-        - Use Radial probability to locate peaks (shell radii); peaks move outward with n.
-        - In 3D, points are intentionally drawn after the volume and with bright color so they remain visible.
+        - Radial view shows shell peaks; 2D slice helps inspect nodal planes; 3D shows overall shape.
         """
     )
 
